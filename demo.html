@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>From text to latent structure</title>
+<style>
+  :root{
+    --bg:#f4f1ea;
+    --fg:#171717;
+    --muted:rgba(23,23,23,.48);
+    --hair:rgba(23,23,23,.16);
+    --panel:rgba(244,241,234,.76);
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --bg:#0d0f12;
+      --fg:#f2f0e9;
+      --muted:rgba(242,240,233,.48);
+      --hair:rgba(242,240,233,.15);
+      --panel:rgba(13,15,18,.74);
+    }
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(--fg)}
+  body{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+  canvas{position:fixed;inset:0;width:100%;height:100%}
+  .chrome{
+    position:fixed; inset:0; pointer-events:none;
+    padding:28px 32px; display:flex; flex-direction:column; justify-content:space-between;
+  }
+  .top{display:flex;justify-content:space-between;align-items:flex-start;gap:24px}
+  .eyebrow{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted)}
+  h1{font-family:Georgia,"Times New Roman",serif;font-size:clamp(26px,3.2vw,52px);line-height:1.02;
+     font-weight:400;letter-spacing:-.035em;margin:8px 0 0;max-width:720px}
+  .stage{
+    font-size:12px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted);
+    border-top:1px solid var(--hair); padding-top:9px; min-width:170px; text-align:right;
+  }
+  .bottom{display:flex;justify-content:space-between;align-items:flex-end;gap:30px}
+  .caption{
+    max-width:540px; font-family:Georgia,"Times New Roman",serif; font-size:17px; line-height:1.5;
+    color:var(--muted);
+  }
+  .legend{display:flex;gap:16px;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+  .legend span::before{content:"";display:inline-block;width:18px;height:1px;background:currentColor;
+      vertical-align:middle;margin-right:7px;opacity:.6}
+  .progress{
+    position:fixed;left:0;bottom:0;height:2px;background:var(--fg);opacity:.65;width:0%;
+  }
+  .hint{
+    position:fixed;right:32px;top:50%;transform:translateY(-50%) rotate(90deg);
+    transform-origin:right top;font-size:10px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--muted);pointer-events:none;
+  }
+  @media(max-width:700px){
+    .chrome{padding:20px}
+    .stage{display:none}
+    .bottom{display:block}
+    .legend{margin-top:14px}
+    .hint{display:none}
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div class="chrome">
+  <div class="top">
+    <div>
+      <div class="eyebrow">Representations / sequence / structure</div>
+      <h1 id="title">A sentence enters a vector space.</h1>
+    </div>
+    <div class="stage" id="stage">01 — text</div>
+  </div>
+  <div class="bottom">
+    <div class="caption" id="caption">
+      Language begins as discrete symbols. The animation treats each fragment as a point that will be embedded, sequenced, and reorganized.
+    </div>
+    <div class="legend">
+      <span>representation</span>
+      <span>trajectory</span>
+      <span>latent structure</span>
+    </div>
+  </div>
+</div>
+<div class="hint">move pointer · click to advance</div>
+<div class="progress" id="progress"></div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const stageEl = document.getElementById('stage');
+  const titleEl = document.getElementById('title');
+  const captionEl = document.getElementById('caption');
+  const progressEl = document.getElementById('progress');
+
+  let W=0,H=0,DPR=1,t0=performance.now();
+  let pointer={x:.5,y:.5,active:false};
+  let manualOffset=0;
+
+  const phrase = [
+    "A","book","moves","through","semantic","space,",
+    "carrying","memory","forward","as","structure","emerges."
+  ];
+
+  const stageCopy = [
+    ["01 — text","A sentence enters a vector space.",
+     "Language begins as discrete symbols. Each fragment becomes a point that can be compared, transformed, and placed in relation to the others."],
+    ["02 — embedding","Tokens become positions.",
+     "The surface sequence dissolves into coordinates. Nearby points suggest similarity; distance becomes a new grammar."],
+    ["03 — trajectory","Sequence becomes motion.",
+     "Order reconnects the points. A text is no longer a bag of vectors, but a path — a changing position through representational space."],
+    ["04 — decomposition","Global structure appears.",
+     "Across many local movements, recurring directions emerge: mixtures, oppositions, and components that organize the space."],
+    ["05 — ideas","Vectors become hypotheses.",
+     "The geometry is not the idea itself. It becomes evidence: a way to ask what structures the model carries, and how those structures combine."]
+  ];
+
+  const hash = s => {
+    let h=2166136261;
+    for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619)}
+    return (h>>>0)/4294967295;
+  };
+
+  const seeds = phrase.map((w,i)=>({
+    w,
+    a:hash(w+"a")*Math.PI*2,
+    r:.14+hash(w+"r")*.29,
+    z:hash(w+"z"),
+    bend:hash(w+"b")-.5
+  }));
+
+  const ideas = [
+    {label:"memory",x:-.48,y:-.18,a:-.45},
+    {label:"contrast",x:.34,y:-.28,a:.35},
+    {label:"narrative",x:-.12,y:.30,a:-.08},
+    {label:"mixture",x:.46,y:.22,a:.55}
+  ];
+
+  function css(name){ return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+  function resize(){
+    DPR=Math.min(window.devicePixelRatio||1,2);
+    W=innerWidth; H=innerHeight;
+    canvas.width=W*DPR; canvas.height=H*DPR;
+    canvas.style.width=W+"px"; canvas.style.height=H+"px";
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+  }
+  addEventListener('resize',resize); resize();
+
+  addEventListener('pointermove',e=>{
+    pointer.x=e.clientX/W; pointer.y=e.clientY/H; pointer.active=true;
+  });
+  addEventListener('pointerleave',()=>pointer.active=false);
+  addEventListener('click',()=>{ manualOffset=(manualOffset+1)%5; t0=performance.now()-manualOffset*7000; });
+
+  const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+  const smooth=x=>x*x*(3-2*x);
+  const mix=(a,b,t)=>a+(b-a)*t;
+
+  function stageProgress(time){
+    const total=35000;
+    let p=((time-t0)%total+total)%total/total;
+    return p;
+  }
+
+  function pointForSeed(s,i,mode){
+    const cx=W*.5, cy=H*.50;
+    const scale=Math.min(W,H);
+    const px=(pointer.x-.5)*scale*.05;
+    const py=(pointer.y-.5)*scale*.05;
+
+    if(mode===0){
+      const lineW=Math.min(W*.72,900);
+      return {
+        x: cx-lineW/2 + (i/(seeds.length-1))*lineW + px*.15,
+        y: cy + Math.sin(i*.7)*4 + py*.15
+      };
+    }
+    const theta=s.a + mode*.13;
+    const rr=s.r*scale;
+    return {
+      x:cx+Math.cos(theta)*rr + (s.z-.5)*scale*.12 + px*(.3+s.z),
+      y:cy+Math.sin(theta)*rr*.63 + s.bend*scale*.15 + py*(.3+s.z)
+    };
+  }
+
+  function drawGrid(alpha){
+    ctx.save();
+    ctx.globalAlpha=alpha;
+    ctx.strokeStyle=css('--hair');
+    ctx.lineWidth=1;
+    const gap=Math.max(44,Math.min(W,H)/11);
+    for(let x=(W/2)%gap;x<W;x+=gap){
+      ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();
+    }
+    for(let y=(H/2)%gap;y<H;y+=gap){
+      ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawText(stageLocal){
+    const fade=1-smooth(clamp((stageLocal-.48)/.42,0,1));
+    if(fade<=.001)return;
+    ctx.save();
+    ctx.fillStyle=css('--fg');
+    ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.font=`${Math.max(15,Math.min(24,W/48))}px Georgia`;
+    seeds.forEach((s,i)=>{
+      const p=pointForSeed(s,i,0);
+      ctx.globalAlpha=fade*(.42+.58*Math.sin((i+1)*1.7)**2);
+      ctx.fillText(s.w,p.x,p.y);
+    });
+    ctx.restore();
+  }
+
+  function drawPoints(stageIndex,local){
+    const emerge = stageIndex===0 ? smooth(clamp((local-.35)/.5,0,1)) : 1;
+    if(emerge<=0)return;
+    ctx.save();
+    seeds.forEach((s,i)=>{
+      const p0=pointForSeed(s,i,0), p1=pointForSeed(s,i,1);
+      const tr=stageIndex===0 ? emerge : 1;
+      const x=mix(p0.x,p1.x,tr), y=mix(p0.y,p1.y,tr);
+      const r=2.1+s.z*2.4;
+      ctx.globalAlpha=.45+.5*s.z;
+      ctx.fillStyle=css('--fg');
+      ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fill();
+
+      if(stageIndex>=1){
+        ctx.globalAlpha=.12;
+        ctx.beginPath();ctx.arc(x,y,r*4.2,0,Math.PI*2);ctx.strokeStyle=css('--fg');ctx.stroke();
+      }
+    });
+    ctx.restore();
+  }
+
+  function drawTrajectory(alpha,phase){
+    if(alpha<=0)return;
+    ctx.save();
+    ctx.strokeStyle=css('--fg');ctx.fillStyle=css('--fg');
+    ctx.lineWidth=1.35;ctx.globalAlpha=.60*alpha;
+    ctx.beginPath();
+    seeds.forEach((s,i)=>{
+      const p=pointForSeed(s,i,1);
+      if(i===0)ctx.moveTo(p.x,p.y); else {
+        const prev=pointForSeed(seeds[i-1],i-1,1);
+        const cx=(prev.x+p.x)/2 + (s.bend)*50;
+        const cy=(prev.y+p.y)/2 + Math.sin(i)*30;
+        ctx.quadraticCurveTo(cx,cy,p.x,p.y);
+      }
+    });
+    ctx.stroke();
+
+    const total=seeds.length-1;
+    const q=(phase%1)*total;
+    const i=Math.min(total-1,Math.floor(q));
+    const u=q-i;
+    const a=pointForSeed(seeds[i],i,1), b=pointForSeed(seeds[i+1],i+1,1);
+    const x=mix(a.x,b.x,u), y=mix(a.y,b.y,u);
+    ctx.globalAlpha=.95*alpha;
+    ctx.beginPath();ctx.arc(x,y,4.2,0,Math.PI*2);ctx.fill();
+    ctx.globalAlpha=.16*alpha;
+    ctx.beginPath();ctx.arc(x,y,17,0,Math.PI*2);ctx.fill();
+    ctx.restore();
+  }
+
+  function drawAxes(alpha,time){
+    if(alpha<=0)return;
+    ctx.save();
+    ctx.translate(W/2,H/2);
+    ctx.rotate(Math.sin(time*.00017)*.03);
+    ctx.strokeStyle=css('--fg');ctx.fillStyle=css('--fg');
+    ctx.lineWidth=1;
+    const L=Math.min(W,H)*.37;
+    ideas.forEach((it,i)=>{
+      const angle=it.a + Math.sin(time*.00013+i)*.04;
+      const x=Math.cos(angle)*L, y=Math.sin(angle)*L*.66;
+      ctx.globalAlpha=.20*alpha;
+      ctx.beginPath();ctx.moveTo(-x,-y);ctx.lineTo(x,y);ctx.stroke();
+
+      ctx.globalAlpha=.68*alpha;
+      ctx.font='11px ui-monospace, SFMono-Regular, Menlo, monospace';
+      ctx.textAlign=x>0?'left':'right';ctx.textBaseline='middle';
+      ctx.fillText(it.label,x+(x>0?9:-9),y);
+    });
+    ctx.restore();
+  }
+
+  function drawMixtures(alpha,time){
+    if(alpha<=0)return;
+    ctx.save();
+    const cx=W/2,cy=H/2,S=Math.min(W,H);
+    for(let k=0;k<4;k++){
+      const ang=ideas[k].a;
+      const dx=Math.cos(ang),dy=Math.sin(ang)*.68;
+      seeds.forEach((s,i)=>{
+        const p=pointForSeed(s,i,1);
+        const score=(Math.sin(i*.73+k*1.91+s.z*4)+1)/2;
+        ctx.globalAlpha=alpha*(.025+.12*score);
+        ctx.strokeStyle=css('--fg');ctx.lineWidth=.7;
+        ctx.beginPath();
+        ctx.moveTo(p.x,p.y);
+        ctx.lineTo(p.x+dx*S*(.06+.13*score),p.y+dy*S*(.06+.13*score));
+        ctx.stroke();
+      });
+    }
+    ctx.restore();
+  }
+
+  function drawIdeaLabels(alpha){
+    if(alpha<=0)return;
+    ctx.save();
+    ctx.textAlign='center';ctx.textBaseline='middle';
+    ideas.forEach((it,i)=>{
+      const x=W/2+it.x*Math.min(W,H), y=H/2+it.y*Math.min(W,H)*.72;
+      ctx.globalAlpha=.13*alpha;
+      ctx.strokeStyle=css('--fg');
+      ctx.beginPath();ctx.arc(x,y,44+i*5,0,Math.PI*2);ctx.stroke();
+
+      ctx.globalAlpha=.80*alpha;
+      ctx.fillStyle=css('--fg');
+      ctx.font=`${13+i%2*2}px Georgia`;
+      ctx.fillText(it.label,x,y);
+    });
+    ctx.restore();
+  }
+
+  function updateCopy(stageIndex){
+    const c=stageCopy[stageIndex];
+    if(stageEl.dataset.s!==String(stageIndex)){
+      stageEl.dataset.s=stageIndex;
+      stageEl.textContent=c[0];
+      titleEl.animate([{opacity:.15,transform:'translateY(5px)'},{opacity:1,transform:'translateY(0)'}],{duration:500,easing:'ease-out'});
+      captionEl.animate([{opacity:.15},{opacity:1}],{duration:650});
+      titleEl.textContent=c[1]; captionEl.textContent=c[2];
+    }
+  }
+
+  function frame(time){
+    requestAnimationFrame(frame);
+    const p=stageProgress(time);
+    const sf=p*5;
+    const stageIndex=Math.min(4,Math.floor(sf));
+    const local=sf-stageIndex;
+    updateCopy(stageIndex);
+    progressEl.style.width=(p*100).toFixed(2)+'%';
+
+    ctx.clearRect(0,0,W,H);
+    ctx.fillStyle=css('--bg');ctx.fillRect(0,0,W,H);
+
+    const gridAlpha = stageIndex===0 ? .15*smooth(local) : .15;
+    drawGrid(gridAlpha);
+
+    if(stageIndex===0){
+      drawText(local);
+      drawPoints(0,local);
+    } else {
+      drawPoints(stageIndex,local);
+    }
+
+    const trajAlpha =
+      stageIndex<2 ? 0 :
+      stageIndex===2 ? smooth(clamp(local/.42,0,1)) :
+      1;
+    drawTrajectory(trajAlpha,(time*.00008));
+
+    const axisAlpha =
+      stageIndex<3 ? 0 :
+      stageIndex===3 ? smooth(clamp(local/.5,0,1)) :
+      1;
+    drawAxes(axisAlpha,time);
+    drawMixtures(axisAlpha*.9,time);
+
+    const ideaAlpha = stageIndex===4 ? smooth(clamp(local/.5,0,1)) : 0;
+    drawIdeaLabels(ideaAlpha);
+
+    // quiet vignette
+    const g=ctx.createRadialGradient(W/2,H/2,Math.min(W,H)*.1,W/2,H/2,Math.max(W,H)*.72);
+    g.addColorStop(0,'rgba(0,0,0,0)');
+    g.addColorStop(1, css('--bg'));
+    ctx.globalAlpha=.22;ctx.fillStyle=g;ctx.fillRect(0,0,W,H);ctx.globalAlpha=1;
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
